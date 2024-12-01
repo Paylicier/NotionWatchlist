@@ -8,18 +8,21 @@ const notion = new Client({
 
 const tmdb = new TMDB(process.env.TMDB_TOKEN || '');
 
-async function loop() {
-    const listUsersResponse = await notion.users.list({});
-    const users = listUsersResponse.results.map(user => user.name);
-    console.log(`Users: ${users.join(', ')}`);
+console.log(`
+    
+ _______          __  .__              __      __         __         .__    .__  .__          __   \r\n \\      \\   _____\/  |_|__| ____   ____\/  \\    \/  \\_____ _\/  |_  ____ |  |__ |  | |__| _______\/  |_ \r\n \/   |   \\ \/  _ \\   __\\  |\/  _ \\ \/    \\   \\\/\\\/   \/\\__  \\\\   __\\\/ ___\\|  |  \\|  | |  |\/  ___\/\\   __\\\r\n\/    |    (  <_> )  | |  (  <_> )   |  \\        \/  \/ __ \\|  | \\  \\___|   Y  \\  |_|  |\\___ \\  |  |  \r\n\\____|__  \/\\____\/|__| |__|\\____\/|___|  \/\\__\/\\  \/  (____  \/__|  \\___  >___|  \/____\/__\/____  > |__|  \r\n        \\\/                           \\\/      \\\/        \\\/          \\\/     \\\/             \\\/        
+    
+    `)
 
+console.log('Connected to Notion and TMDB');
+console.log('Watching for changes...');
+
+async function loop() {
     const listDatabasesResponse = await notion.search({
         filter: { property: 'object', value: 'database' },
         query: 'Contents'
     });
 
-    const databases = listDatabasesResponse.results.map(database => `${database.title[0].plain_text} (${database.id})`);
-    console.log(`Databases: ${databases.join(', ')}`);
 
     // Process each database in parallel
     await Promise.all(
@@ -33,8 +36,8 @@ async function loop() {
                 }
             });
 
-            const films = listPagesResponse.results.filter(page => page.properties.Name.title[0]);
-            console.log(`Films in ${database.title[0].plain_text}: ${films.map(film => film.properties.Name.title[0].plain_text).join(', ')}`);
+            const films = listPagesResponse.results.filter(page => page.properties?.Name?.title[0]);
+            //console.log(`Films in ${database.title[0].plain_text}: ${films.map(film => film.properties.Name.title[0].plain_text).join(', ')}`);
 
             const listPropertiesResponse = await notion.databases.retrieve({ database_id: databaseId });
             const block_id = listPropertiesResponse.parent.block_id;
@@ -51,6 +54,7 @@ async function loop() {
                     const elLength = elProperties.Length?.rich_text[0]?.plain_text || null;
                     const elRating = elProperties["Rating 1-10"]?.number || null;
 
+
                     if (!elName) {
                         console.error(`Film with ID ${elId} does not have a name`);
                         return;
@@ -58,14 +62,28 @@ async function loop() {
 
                     // Check missing properties and fetch data from TMDB
                     if (!elLength || elGenres.length === 0 || !elRating) {
-                        const searchResults = await tmdb.search.multi({ query: elName });
+                        const searchResults = await tmdb.search.multi({ query: elName, language: process.env.LANG || 'en-US' as any });
                         const movie = searchResults.results[0];
                         if (!movie) {
                             console.error(`Film with ID ${elId} does not have a TMDB match`);
                             return;
                         }
 
-                        const movieDetails = movie.media_type === 'movie' ? await tmdb.movies.details(movie.id) : await tmdb.tvShows.details(movie.id);
+                        // Update Movie Title
+                        if (movie.name !== elName) {
+                            console.log(`Updating name for ${elName} to ${movie.name || movie.title}`);
+                            await notion.pages.update({
+                                page_id: elId,
+                                properties: {
+                                    Name: {
+                                        title: [{ type: 'text', text: { content: movie.name || movie.title } }]
+                                    }
+                                }
+                            });
+                            console.log(`Name updated for ${elName}`);
+                        }
+
+                        const movieDetails = movie.media_type === 'movie' ? await tmdb.movies.details(movie.id, undefined, process.env.LANG || 'en-US' as any) : await tmdb.tvShows.details(movie.id, undefined, process.env.LANG || 'en-US' as any);
 
                         // Update Length
                         if (!elLength) {
@@ -78,6 +96,7 @@ async function loop() {
                                     }
                                 }
                             });
+                            console.log(`Length updated for ${elName}`);
                         }
 
                         // Update Genres
@@ -87,6 +106,7 @@ async function loop() {
                                     query: 'Genres',
                                     filter: { property: 'object', value: 'database' }
                                 });
+
 
                                 const genresdb = listChildResponse.results.find(page => page.parent.block_id === block_id);
 
@@ -100,11 +120,12 @@ async function loop() {
 
                                 genres = genredb.results.map(page => ({
                                     id: page.id,
-                                    name: page.properties.Name.title[0]?.plain_text
+                                    name: page.properties?.Name?.title[0]?.plain_text
                                 }));
                             }
 
-                            const tmdbGenres = movieDetails.genres.map(genre => genre.name);
+                            const enMovieDetails = movie.media_type === 'movie' ? await tmdb.movies.details(movie.id, undefined, 'en-US') : await tmdb.tvShows.details(movie.id, undefined, 'en-US');
+                            const tmdbGenres = enMovieDetails.genres.map(genre => genre.name);
                             const genresToAdd = genres.filter(dbGenre => tmdbGenres.includes(dbGenre.name));
                             await notion.pages.update({
                                 page_id: elId,
@@ -114,16 +135,18 @@ async function loop() {
                                     }
                                 }
                             });
+                            console.log(`Genres updated for ${elName}`);
                         }
 
                         // Update Rating
-                        if (!elRating) {
+                        if (elRating === null) {
                             await notion.pages.update({
                                 page_id: elId,
                                 properties: {
-                                    "Rating 1-10": { number: Math.round(movieDetails.vote_average) }
+                                    "Rating 1-10": { number: Math.round(movieDetails.vote_average || 1) }
                                 }
                             });
+                            console.log(`Rating updated for ${elName}`);
                         }
 
                         // Update Cover
@@ -136,6 +159,7 @@ async function loop() {
                                     external: { url: `https://image.tmdb.org/t/p/original${movieDetails.backdrop_path || movieDetails.poster_path}` }
                                 }
                             });
+                            console.log(`Cover updated for ${elName}`);
                         }
                     }
                 })
@@ -143,9 +167,7 @@ async function loop() {
         })
     );
 
-    console.log("All films have been updated.");
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    loop();
+    setTimeout(loop, 500);
 };
     
-    loop();
+loop();
