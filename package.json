@@ -1,0 +1,15 @@
+{
+  "dependencies": {
+    "@notionhq/client": "^2.2.15",
+    "tmdb-ts": "^2.0.1"
+  },
+  "name": "notionwatchlist",
+  "module": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
